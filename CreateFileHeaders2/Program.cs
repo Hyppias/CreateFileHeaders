@@ -12,87 +12,94 @@
 // but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 // or FITNESS FOR A PARTICULAR PURPOSE.
 // See the GNU General Public License for more details.
-// You should have received a copy of the GNU General Public License along
-// with this program. If not, see <https://www.gnu.org/licenses/>. 
+// A copy of the GNU General Public License is included in this project.
+// If not, see <https://www.gnu.org/licenses/>. 
 
 #endregion
 
-using System.Diagnostics;    
-using System.Diagnostics.Tracing;
+using System.Diagnostics;
+using System.Text.RegularExpressions;
+
 namespace CreateFileHeaders
 {
     internal class Program
     {
         /// <summary>
-        /// Adds a file header to all .cs source files in a VS solution
+        /// Adds a file header to all .cs and .xaml source files in a VS solution
         /// </summary>
         /// <see cref="https://rosettacode.org/wiki/Walk_a_directory/Recursively"/>
 
+        // remove old fileheaders, which may be at most 40 lines:
         const int MaxActualFileheaderLength = 40;
 
-        const string root = "C:\\Users\\erik\\Documents\\Visual Studio 2022\\Projects\\CoCa7";
-        // Create two file in each folder that needs its own copyright statement:
-        // CopyrightStatementXAML.txt
-        // CopyrightStatementCs.txt
-        // and exclude these files from the project:        
+        const string root = "C:\\Users\\erik\\Documents\\Visual Studio 2022\\Projects\\CoCa9";         
+
+        // Each DirectoryTree branch may have its own set of two. A set determines the
+        // content of the header for THAT branch.
         const string copyright = "CopyrightStatement";
+
+        // delimiting phrases used to recognize the old headers.
+        // First two elements must be lowercase
+        static string HeaderMarker = "FileHeader";
         static string[][] delimiters =
             {
-                new[] {"#region fileheader", "#endregion fileheader",   "CS",  ".cs"},
-                new[] {"<!-- fileheader"   , " fileheader -->", "XAML",".xaml"}
+                new[] {$"#region {HeaderMarker}\n/*", $"*/\n#endregion {HeaderMarker}",   "CS",  ".cs"},
+                new[] {$"<!-- {HeaderMarker}"   , $" {HeaderMarker} -->", "XAML",".xaml"}
             };
-        static List<string> cr = new List<string>();
+        static List<string> copyrightStatementLines = new List<string>() 
+            {
+            "© Normec Rei-Lux, 2023",
+            "All rights reserved.",
+            "No part of this file may be copied in any form",
+            " without written consent of the copyrightholder."
+            };
         const string HashFile = "ProjectHashCodes";
         static List<string> HashCodes = new List<string>();
         static string Project;
         static int n;
-        static string rem;
+
         static void Main(string[] args)
         {
             foreach (var d in GetProjects(root))
             {
-                
-                // Print the full path of all .cs files that are somewhere
-                // in the C:\Windows directory or its subdirectories
-                for (n = 0; n < 2; n++)
+                foreach (string[] delim in delimiters) // cd / xaml
                 {
                     string hashFile;
                     HashCodes.Clear();
-                    File.Delete(hashFile =  $"{d.Item2}\\{HashFile}{delimiters[n][2]}.txt");
-                    if (!File.Exists($"{d.Item2}/{copyright}{delimiters[n][2]}.txt"))
+                    File.Delete(hashFile = $"{d.Item2}\\{HashFile}{delim[2]}.txt");
+                    if (!File.Exists($"{d.Item2}/{copyright}{delim[2]}.txt"))
                     {
                         // do NOT switch CopyrightStatement  files.
                         // Keep the old one:
                         continue;
                     }
-                    rem = new[] { "// ", "" }[n];
-                    
-                    foreach (var file in TraverseDirectory(
-                        d.Item2.FullName, f => f.Extension == delimiters[n][3]))
+                    Project = d.Item1;
+                    foreach (var file in TraverseDirectory(d.Item2.FullName,  delim))
                     {
-                        Project = d.Item1;
+                        
                         Console.WriteLine(file.FullName);
                     }
                     // save the hashes.
                     File.AppendAllLines(hashFile, HashCodes);
-                    
+
                 }
             }
             Console.WriteLine("Done.");
             Console.ReadLine();
         }
 
-        static IEnumerable<FileInfo> TraverseDirectory(string rootPath, Func<FileInfo, bool> Pattern)
+        static IEnumerable<FileInfo> TraverseDirectory(string rootPath,  string[] delim)
         {
+            string fileType = delim[3];
             var directoryStack = new Stack<DirectoryInfo>();
             directoryStack.Push(new DirectoryInfo(rootPath));
             while (directoryStack.Count > 0)
             {
                 var dir = directoryStack.Pop();
                 string crFile;
-                if (File.Exists(crFile = $"{dir}\\{copyright}{delimiters[n][2]}.txt"))
-                {                    
-                    cr = File.ReadAllLines(crFile).ToList();
+                if (File.Exists(crFile = $"{dir}\\{copyright}{fileType}.txt"))
+                {
+                    copyrightStatementLines = File.ReadAllLines(crFile).ToList();
                 }
 
                 try
@@ -108,10 +115,10 @@ namespace CreateFileHeaders
                 {
                     continue; // We don't have access to this directory, so skip it
                 }
-                foreach (var f in dir.GetFiles().Where(Pattern)) // "Pattern" is a function
+                foreach (var f in dir.GetFiles().Where(fl => fl.Extension.ToLower().Equals(fileType))) // "Pattern" is a function
                 {
                     var lines = File.ReadAllLines(f.FullName).ToList();
-                    ReplaceHeader(lines, f);
+                    ReplaceHeader(lines, f, delim);
 
                     yield return f;
                 }
@@ -149,37 +156,45 @@ namespace CreateFileHeaders
         /// </summary>
         /// <param name="lines">The content of the file that needs a new FileHeader region</param>
         /// <param name="fi">The file's name</param>
-        static void ReplaceHeader(List<string> lines, FileInfo fi)
+        static void ReplaceHeader(List<string> lines, FileInfo fi, string[] delim)
         {
             int start = 0;
             int end = 0;
-            int m, i;
-            // While we're at it, strip surplus spaces:
-            foreach (var l in lines)
+            int i;
+            
+            // remove extra spaces:
+            for (int p = 0; p < lines.Count; p++)
             {
-                l.TrimEnd();
-            }
-            foreach (var l in lines)
-            {
-                l.Replace("  ", " ");
+                int n = 0;
+                //lines[p] = Regex.Replace(lines[p], "[ \t]+$", " ");
+                // skip leading spaces:
+                if (lines[p].Length > 2)
+                {
+                    //while (lines[p][n..].Contains("  "))
+                    {
+                        string t= Regex.Replace(lines[p].TrimEnd(' '), @"(\w+ )\s+", "$0",RegexOptions.IgnoreCase);
+                    }
+                }
             }
             // find start and end of old region
-            for (m = 0; m < lines.Count; m++)
+            end = start = -1;
+            for (int m = 0; m < lines.Count; m++)
             {
-                start = end = 0;
-                if (lines[m].ToLower().Contains(delimiters[n][0]))
+                if (start == -1)
                 {
-                    start = m;
-                    for (i = m + 1; i < MaxActualFileheaderLength; i++)
+                    if (lines[m].ToLower().Contains(HeaderMarker.ToLower()))
                     {
-                        if (lines[i].ToLower().Contains(delimiters[n][1]))
-                        {
-                            end = i;
-                            break;
-                        }
+                        start = m;
                     }
-                    break;
                 }
+                else
+                {
+                    if (lines[m].ToLower().Contains(HeaderMarker.ToLower()))
+                    {
+                        end = m;
+                        break;
+                    }
+                }                
             }
 
             // remove it:
@@ -192,25 +207,28 @@ namespace CreateFileHeaders
                 {
                     lines.RemoveAt(0);
                 }
-            }            
+            }
 
-            // prepend new FileHeader region:
+            // prepend new FileHeader region and a fixed part for all headers:
             List<string> newlines = new List<string>()
             {
-                delimiters[n][0],
-                $"{rem}Project:     {Project}",
-                $"{rem}Filename:    {fi.Name}",
-                $"{rem}Last write:  {fi.LastWriteTime.ToString()}",
-                $"{rem}Creation:    {fi.CreationTime.ToString()}",               
+                delim[0],
+                $"Project:     {Project}",
+                $"Filename:    {fi.Name}",
+                $"Last write:  {fi.LastWriteTime.ToString()}",
+                $"Creation:    {fi.CreationTime.ToString()}",
                 ""
             };
-            
-            foreach (var c in cr)
+
+            // Add the lines from the CopyrightStatement.txt file:
+            foreach (var c in copyrightStatementLines)
             {
-                newlines.Add($"{rem}{c}");
+                newlines.Add(c);
             };
-            newlines.Add(delimiters[n][1]);
+            newlines.Add(delim[1]);
             newlines.Add("");
+
+            //List<string> newlines = new List<string>();
             newlines.AddRange(lines);
             Debug.WriteLine($"{Project} {fi.Directory.Name} {fi.Name}");
 
